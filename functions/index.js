@@ -66,6 +66,40 @@ function parseText(text) {
 }
 
 // =========================
+// TEXT PARSER (AI)
+// =========================
+async function extractDealFromText(text) {
+  const openai = getOpenAI();
+
+  const res = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+Extract real estate deal data.
+
+Return JSON:
+{
+  "location": string | null,
+  "size": number | null,
+  "purchasePrice": number | null,
+  "reply": string
+}
+`
+      },
+      {
+        role: "user",
+        content: text
+      }
+    ],
+    response_format: { type: "json_object" }
+  });
+
+  return JSON.parse(res.choices[0].message.content);
+}
+
+// =========================
 // CALC
 // =========================
 function calculate(d) {
@@ -153,26 +187,47 @@ exports.chatHandler = onDocumentCreated(
 
         await userRef.set({ pendingDeal: parsed }, { merge: true });
 
-        await send(db, userId, preview(parsed), sessionId, "preview");
+        await sendStructured(db, userId, parsed, sessionId);
       }
+
 
       return;
     }
 
     // =========================
-    // TEXT
+    // TEXT (AI)
     // =========================
     if (msg.text) {
 
-      const parsed = parseText(msg.text);
+      let parsed;
 
-      if (parsed.location && parsed.size && parsed.purchasePrice) {
+      try {
+        parsed = await extractDealFromText(msg.text);
+      } catch (e) {
+        console.error("AI TEXT ERROR:", e);
+
+        // fallback на старый парсер
+        parsed = parseText(msg.text);
+      }
+
+      const hasAllFields =
+        parsed.location &&
+        parsed.size &&
+        parsed.purchasePrice;
+
+      if (hasAllFields) {
 
         await userRef.set({ pendingDeal: parsed }, { merge: true });
 
-        await send(db, userId, preview(parsed), sessionId, "preview");
+        await sendStructured(db, userId, parsed, sessionId);
+
       } else {
-        await send(db, userId, "Please provide location, size and price.", sessionId);
+
+        const reply =
+          parsed.reply ||
+          "Please provide location, size and price.";
+
+        await send(db, userId, reply, sessionId);
       }
     }
   }
@@ -190,6 +245,27 @@ async function send(db, userId, text, sessionId, type = "") {
       type,
       role: "assistant",
       sessionId,
+      createdAt: FieldValue.serverTimestamp()
+    });
+}
+
+// =========================
+// SEND STRUCTURED (NEW)
+// =========================
+async function sendStructured(db, userId, deal, sessionId) {
+  const c = calculate(deal);
+
+  await db.collection("users")
+    .doc(userId)
+    .collection("messages")
+    .add({
+      type: "preview",
+      role: "assistant",
+      sessionId,
+      deal: {
+        ...deal,
+        ...c
+      },
       createdAt: FieldValue.serverTimestamp()
     });
 }

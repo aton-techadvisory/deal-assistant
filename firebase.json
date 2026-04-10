@@ -2,13 +2,13 @@
   "firestore": {
     "database": "(default)",
     "location": "eur3",
-    "rules": "default",
-    "indexes": "default"
+    "rules": "firestore.rules"
   },
   "functions": [
     {
       "source": "functions",
       "codebase": "default",
+      "runtime": "nodejs20",
       "disallowLegacyRuntimeConfig": true,
       "ignore": [
         "node_modules",
