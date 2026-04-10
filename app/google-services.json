@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "521754531718",
+    "project_id": "n-deal-assistant",
+    "storage_bucket": "n-deal-assistant.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:521754531718:android:78869020bc3535b836fe07",
+        "android_client_info": {
+          "package_name": "com.example.n_deal_assistant"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDD6Elr8nkF5ys0-6U9YIq4wpT5RmYcngI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
