@@ -2,8 +2,11 @@ const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const { FieldValue } = require("firebase-admin/firestore");
 const OpenAI = require("openai");
+const { getStorage } = require("firebase-admin/storage");
 
 admin.initializeApp();
+
+const bucket = getStorage().bucket();
 
 function getOpenAI() {
   return new OpenAI({
@@ -12,7 +15,7 @@ function getOpenAI() {
 }
 
 // =========================
-// IMAGE PARSER (FIXED)
+// IMAGE PARSER
 // =========================
 async function extractDealFromImage(base64) {
   try {
@@ -39,18 +42,16 @@ The image may be:
 - a document
 
 Find and return:
-
 - location (address or city)
 - size in sqm (numbers near sqm, m2, m²)
-- purchasePrice (ONLY property price, ignore phone numbers, IDs, dates)
+- purchasePrice (ONLY property price)
 
-Rules:
-- ignore phone numbers
-- ignore reference numbers
-- ignore unrelated numbers
-- if multiple prices exist, choose the main property price
+Ignore:
+- phone numbers
+- IDs
+- unrelated numbers
 
-Return strict JSON:
+Return JSON:
 {
   "location": string | null,
   "size": number | null,
@@ -67,8 +68,7 @@ Return strict JSON:
       response_format: { type: "json_object" }
     });
 
-    const parsed = JSON.parse(res.choices[0].message.content);
-    return sanitizeDeal(parsed);
+    return sanitizeDeal(JSON.parse(res.choices[0].message.content));
 
   } catch (e) {
     console.error("IMAGE ERROR:", e);
@@ -77,34 +77,30 @@ Return strict JSON:
 }
 
 // =========================
-// TEXT PARSER (SIMPLE)
+// TEXT PARSER (fallback)
 // =========================
 function parseText(text) {
-
   const sizeMatch = text.match(/(\d+)\s*(sqm|m2|m²)/i);
   const priceMatch = text.match(/(\d[\d,\.]*)/g);
 
   return {
     location: text.replace(/\d.*$/, "").trim(),
     size: sizeMatch ? Number(sizeMatch[1]) : null,
-    purchasePrice: priceMatch ? Number(priceMatch[priceMatch.length - 1].replace(/,/g, "")) : null
+    purchasePrice: priceMatch ? Number(priceMatch.pop()?.replace(/,/g, "")) : null
   };
 }
 
+// =========================
+// SANITIZE
+// =========================
 function sanitizeDeal(d = {}) {
-  if (d.purchasePrice && d.purchasePrice < 1000) {
-    d.purchasePrice = null;
-  }
-
-  if (d.size && d.size < 10) {
-    d.size = null;
-  }
-
+  if (d.purchasePrice && d.purchasePrice < 1000) d.purchasePrice = null;
+  if (d.size && d.size < 10) d.size = null;
   return d;
 }
 
 // =========================
-// TEXT PARSER (AI)
+// TEXT AI
 // =========================
 async function extractDealFromText(text) {
   const openai = getOpenAI();
@@ -114,17 +110,13 @@ async function extractDealFromText(text) {
     messages: [
       {
         role: "system",
-        content: `
-Extract real estate deal data.
-
+        content: `Extract real estate deal data.
 Return JSON:
 {
   "location": string | null,
   "size": number | null,
-  "purchasePrice": number | null,
-  "reply": string
-}
-`
+  "purchasePrice": number | null
+}`
       },
       {
         role: "user",
@@ -134,16 +126,12 @@ Return JSON:
     response_format: { type: "json_object" }
   });
 
-  const parsed = JSON.parse(res.choices[0].message.content);
-  return sanitizeDeal(parsed);
+  return sanitizeDeal(JSON.parse(res.choices[0].message.content));
 }
 
 // =========================
-// MERGE DEAL STATE (NEW)
+// MERGE
 // =========================
-// Combines previously collected deal data with newly extracted fields.
-// Priority: newData → oldDeal → null
-// Used for conversational data collection across multiple user messages.
 function mergeDeal(oldDeal = {}, newData = {}) {
   return {
     location: newData.location || oldDeal.location || null,
@@ -151,18 +139,15 @@ function mergeDeal(oldDeal = {}, newData = {}) {
     purchasePrice: newData.purchasePrice || oldDeal.purchasePrice || null
   };
 }
+
 // =========================
-// MISSING FIELDS + QUESTIONS (NEW)
+// MISSING
 // =========================
-// Detects which required deal fields are missing
-// and generates the next question for the user.
 function getMissingFields(deal) {
   const missing = [];
-
   if (!deal.location) missing.push("location");
   if (!deal.size) missing.push("size");
   if (!deal.purchasePrice) missing.push("purchasePrice");
-
   return missing;
 }
 
@@ -170,9 +155,9 @@ function generateQuestion(missing) {
   if (missing.includes("location")) return "What is the location?";
   if (missing.includes("size")) return "What is the size in sqm?";
   if (missing.includes("purchasePrice")) return "What is the purchase price?";
-
   return "Please provide missing deal details.";
 }
+
 // =========================
 // CALC
 // =========================
@@ -191,21 +176,49 @@ function calculate(d) {
   };
 }
 
-function preview(deal) {
+// =========================
+// HTML REPORT
+// =========================
+function generateHTMLReport(deal) {
   const c = calculate(deal);
 
-  return `Deal Preview
+  return `
+<html>
+<head>
+  <title>Deal Report</title>
+</head>
+<body>
+  <h1>Deal Report</h1>
 
-Location: ${deal.location}
-Size: ${deal.size} sqm
-Price: €${deal.purchasePrice}
+  <p><b>Location:</b> ${deal.location}</p>
+  <p><b>Size:</b> ${deal.size} sqm</p>
+  <p><b>Price:</b> €${deal.purchasePrice}</p>
 
-GDV: €${c.gdv}
-Cost: €${c.cost}
-Profit: €${c.profit}
+  <hr/>
 
-ROI: ${c.roi}%
-Margin: ${c.margin}%`;
+  <p><b>GDV:</b> €${c.gdv}</p>
+  <p><b>Cost:</b> €${c.cost}</p>
+  <p><b>Profit:</b> €${c.profit}</p>
+
+  <p><b>ROI:</b> ${c.roi}%</p>
+  <p><b>Margin:</b> ${c.margin}%</p>
+
+</body>
+</html>`;
+}
+
+// =========================
+// UPLOAD REPORT
+// =========================
+async function uploadReport(dealId, html) {
+  const file = bucket.file(`reports/${dealId}.html`);
+
+  await file.save(html, {
+    contentType: "text/html",
+    public: true
+  });
+
+  return `https://storage.googleapis.com/${bucket.name}/reports/${dealId}.html`;
 }
 
 // =========================
@@ -232,13 +245,30 @@ exports.chatHandler = onDocumentCreated(
     const userDoc = await userRef.get();
     const pendingDeal = userDoc.data()?.pendingDeal;
 
-    // =========================
+    // EDIT
+    if (msg.action === "edit") {
+      await send(
+        db,
+        userId,
+        "What do you want to change? (location, size, price)",
+        sessionId
+      );
+      return;
+    }
+
     // SAVE
-    // =========================
     if (msg.action === "save" && pendingDeal) {
 
-      await dealsRef.add({
+      const docRef = dealsRef.doc();
+      const dealId = docRef.id;
+
+      const htmlReport = generateHTMLReport(pendingDeal);
+      const reportUrl = await uploadReport(dealId, htmlReport);
+
+      await docRef.set({
         ...pendingDeal,
+        reportHTML: htmlReport,
+        reportUrl: reportUrl,
         createdAt: FieldValue.serverTimestamp()
       });
 
@@ -250,59 +280,42 @@ exports.chatHandler = onDocumentCreated(
       return;
     }
 
-    // =========================
     // IMAGE
-    // =========================
     if (msg.imageBase64) {
-
       const parsed = await extractDealFromImage(msg.imageBase64);
 
       if (parsed?.location && parsed?.size && parsed?.purchasePrice) {
-
         await userRef.set({ pendingDeal: parsed }, { merge: true });
-
         await sendStructured(db, userId, parsed, sessionId);
       }
-
 
       return;
     }
 
-   // =========================
-   // TEXT (AI + STATE MERGE)
-   // =========================
-   if (msg.text) {
+    // TEXT
+    if (msg.text) {
 
-     let parsed;
+      let parsed;
 
-     try {
-       parsed = await extractDealFromText(msg.text);
-     } catch (e) {
-       console.error("AI TEXT ERROR:", e);
+      try {
+        parsed = await extractDealFromText(msg.text);
+      } catch (e) {
+        parsed = parseText(msg.text);
+      }
 
-       // fallback на старый парсер
-       parsed = parseText(msg.text);
-     }
+      const merged = mergeDeal(pendingDeal, parsed);
+      await userRef.set({ pendingDeal: merged }, { merge: true });
 
-     // 🔥 объединяем с предыдущими данными
-     const merged = mergeDeal(pendingDeal, parsed);
+      const missing = getMissingFields(merged);
 
-     // сохраняем состояние
-     await userRef.set({ pendingDeal: merged }, { merge: true });
-
-     const missing = getMissingFields(merged);
-
-     if (missing.length === 0) {
-
-       await sendStructured(db, userId, merged, sessionId);
-
-     } else {
-
-       const question = generateQuestion(missing);
-
-       await send(db, userId, question, sessionId);
-     }
-   }has
+      if (missing.length === 0) {
+        await sendStructured(db, userId, merged, sessionId);
+      } else {
+        await send(db, userId, generateQuestion(missing), sessionId);
+      }
+    }
+  }
+);
 
 // =========================
 // SEND
@@ -321,7 +334,7 @@ async function send(db, userId, text, sessionId, type = "") {
 }
 
 // =========================
-// SEND STRUCTURED (NEW)
+// SEND STRUCTURED
 // =========================
 async function sendStructured(db, userId, deal, sessionId) {
   const c = calculate(deal);
@@ -339,6 +352,4 @@ async function sendStructured(db, userId, deal, sessionId) {
       },
       createdAt: FieldValue.serverTimestamp()
     });
-    }
-  }
-);
+}
