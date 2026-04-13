@@ -30,7 +30,32 @@ async function extractDealFromImage(base64) {
           content: [
             {
               type: "text",
-              text: "Extract location, size (sqm), purchasePrice. Return JSON."
+              text: `Extract real estate deal data from this image.
+
+The image may be:
+- a screenshot
+- a chat conversation
+- a property listing
+- a document
+
+Find and return:
+
+- location (address or city)
+- size in sqm (numbers near sqm, m2, m²)
+- purchasePrice (ONLY property price, ignore phone numbers, IDs, dates)
+
+Rules:
+- ignore phone numbers
+- ignore reference numbers
+- ignore unrelated numbers
+- if multiple prices exist, choose the main property price
+
+Return strict JSON:
+{
+  "location": string | null,
+  "size": number | null,
+  "purchasePrice": number | null
+}`
             },
             {
               type: "image_url",
@@ -42,7 +67,8 @@ async function extractDealFromImage(base64) {
       response_format: { type: "json_object" }
     });
 
-    return JSON.parse(res.choices[0].message.content);
+    const parsed = JSON.parse(res.choices[0].message.content);
+    return sanitizeDeal(parsed);
 
   } catch (e) {
     console.error("IMAGE ERROR:", e);
@@ -63,6 +89,18 @@ function parseText(text) {
     size: sizeMatch ? Number(sizeMatch[1]) : null,
     purchasePrice: priceMatch ? Number(priceMatch[priceMatch.length - 1].replace(/,/g, "")) : null
   };
+}
+
+function sanitizeDeal(d = {}) {
+  if (d.purchasePrice && d.purchasePrice < 1000) {
+    d.purchasePrice = null;
+  }
+
+  if (d.size && d.size < 10) {
+    d.size = null;
+  }
+
+  return d;
 }
 
 // =========================
@@ -96,9 +134,45 @@ Return JSON:
     response_format: { type: "json_object" }
   });
 
-  return JSON.parse(res.choices[0].message.content);
+  const parsed = JSON.parse(res.choices[0].message.content);
+  return sanitizeDeal(parsed);
 }
 
+// =========================
+// MERGE DEAL STATE (NEW)
+// =========================
+// Combines previously collected deal data with newly extracted fields.
+// Priority: newData → oldDeal → null
+// Used for conversational data collection across multiple user messages.
+function mergeDeal(oldDeal = {}, newData = {}) {
+  return {
+    location: newData.location || oldDeal.location || null,
+    size: newData.size || oldDeal.size || null,
+    purchasePrice: newData.purchasePrice || oldDeal.purchasePrice || null
+  };
+}
+// =========================
+// MISSING FIELDS + QUESTIONS (NEW)
+// =========================
+// Detects which required deal fields are missing
+// and generates the next question for the user.
+function getMissingFields(deal) {
+  const missing = [];
+
+  if (!deal.location) missing.push("location");
+  if (!deal.size) missing.push("size");
+  if (!deal.purchasePrice) missing.push("purchasePrice");
+
+  return missing;
+}
+
+function generateQuestion(missing) {
+  if (missing.includes("location")) return "What is the location?";
+  if (missing.includes("size")) return "What is the size in sqm?";
+  if (missing.includes("purchasePrice")) return "What is the purchase price?";
+
+  return "Please provide missing deal details.";
+}
 // =========================
 // CALC
 // =========================
@@ -194,44 +268,41 @@ exports.chatHandler = onDocumentCreated(
       return;
     }
 
-    // =========================
-    // TEXT (AI)
-    // =========================
-    if (msg.text) {
+   // =========================
+   // TEXT (AI + STATE MERGE)
+   // =========================
+   if (msg.text) {
 
-      let parsed;
+     let parsed;
 
-      try {
-        parsed = await extractDealFromText(msg.text);
-      } catch (e) {
-        console.error("AI TEXT ERROR:", e);
+     try {
+       parsed = await extractDealFromText(msg.text);
+     } catch (e) {
+       console.error("AI TEXT ERROR:", e);
 
-        // fallback на старый парсер
-        parsed = parseText(msg.text);
-      }
+       // fallback на старый парсер
+       parsed = parseText(msg.text);
+     }
 
-      const hasAllFields =
-        parsed.location &&
-        parsed.size &&
-        parsed.purchasePrice;
+     // 🔥 объединяем с предыдущими данными
+     const merged = mergeDeal(pendingDeal, parsed);
 
-      if (hasAllFields) {
+     // сохраняем состояние
+     await userRef.set({ pendingDeal: merged }, { merge: true });
 
-        await userRef.set({ pendingDeal: parsed }, { merge: true });
+     const missing = getMissingFields(merged);
 
-        await sendStructured(db, userId, parsed, sessionId);
+     if (missing.length === 0) {
 
-      } else {
+       await sendStructured(db, userId, merged, sessionId);
 
-        const reply =
-          parsed.reply ||
-          "Please provide location, size and price.";
+     } else {
 
-        await send(db, userId, reply, sessionId);
-      }
-    }
-  }
-);
+       const question = generateQuestion(missing);
+
+       await send(db, userId, question, sessionId);
+     }
+   }has
 
 // =========================
 // SEND
@@ -268,4 +339,6 @@ async function sendStructured(db, userId, deal, sessionId) {
       },
       createdAt: FieldValue.serverTimestamp()
     });
-}
+    }
+  }
+);

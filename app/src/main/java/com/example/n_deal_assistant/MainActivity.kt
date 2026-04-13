@@ -17,11 +17,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.*
@@ -38,6 +40,7 @@ data class Message(
     val text: String = "",
     val role: String = "",
     val type: String = "",
+    val deal: Map<String, Any>? = null,
     val createdAt: Timestamp? = null
 )
 
@@ -179,13 +182,23 @@ fun ChatScreen(onOpenDeals: () -> Unit) {
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
+
+            val fileName = uri.lastPathSegment ?: "file"
+
+            // Show toast/snackbar
+            scope.launch {
+                snackbarHostState.showSnackbar("Reading your file...")
+            }
+
             val base64 = uriToBase64(context, uri) ?: return@rememberLauncherForActivityResult
 
+            // Single message: visible + processing
             db.collection("users")
                 .document(userId)
                 .collection("messages")
                 .add(
                     mapOf(
+                        "text" to "$fileName file attached",
                         "imageBase64" to base64,
                         "role" to "user",
                         "sessionId" to sessionId,
@@ -211,9 +224,10 @@ fun ChatScreen(onOpenDeals: () -> Unit) {
 
                         Message(
                             id = it.id,
-                            text = it.getString("text") ?: "[image]",
+                            text = it.getString("text") ?: "",
                             role = it.getString("role") ?: "",
                             type = type,
+                            deal = it.get("deal") as? Map<String, Any>,
                             createdAt = it.getTimestamp("createdAt")
                         )
                     }.sortedBy { it.createdAt?.seconds ?: 0 }
@@ -299,7 +313,10 @@ fun ChatScreen(onOpenDeals: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
 
                 IconButton(onClick = { imageLauncher.launch("image/*") }) {
-                    Text("📷")
+                    Icon(
+                        imageVector = Icons.Default.AttachFile,
+                        contentDescription = "Attach file"
+                    )
                 }
 
                 TextField(
@@ -331,8 +348,8 @@ fun ChatScreen(onOpenDeals: () -> Unit) {
 fun MessageItem(message: Message, onSave: () -> Unit) {
 
     when {
-        message.type == "preview" || message.text.contains("Deal Preview") -> {
-            PreviewCard(message.text, onSave)
+        message.type == "preview" && message.deal != null -> {
+            PreviewCard(message.deal, onSave)
         }
 
         else -> {
@@ -341,7 +358,12 @@ fun MessageItem(message: Message, onSave: () -> Unit) {
                 horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start
             ) {
                 Card(modifier = Modifier.padding(4.dp)) {
-                    Text(message.text, modifier = Modifier.padding(12.dp))
+                    val isAttachment = message.text.contains("file attached", ignoreCase = true)
+                    Text(
+                        message.text,
+                        modifier = Modifier.padding(12.dp),
+                        fontStyle = if (isAttachment) FontStyle.Italic else FontStyle.Normal
+                    )
                 }
             }
         }
@@ -353,14 +375,49 @@ fun MessageItem(message: Message, onSave: () -> Unit) {
 // =========================
 
 @Composable
-fun PreviewCard(text: String, onSave: () -> Unit) {
+fun PreviewCard(deal: Map<String, Any>, onSave: () -> Unit) {
+
+    val location = deal["location"]?.toString() ?: "-"
+    val size = (deal["size"] as? Number)?.toInt() ?: 0
+    val price = (deal["purchasePrice"] as? Number)?.toInt() ?: 0
+
+    val gdv = (deal["gdv"] as? Number)?.toInt() ?: 0
+    val cost = (deal["cost"] as? Number)?.toInt() ?: 0
+    val profit = (deal["profit"] as? Number)?.toInt() ?: 0
+
+    val roi = (deal["roi"] as? Number)?.toInt() ?: 0
+    val margin = (deal["margin"] as? Number)?.toInt() ?: 0
+
     Card(
         modifier = Modifier.fillMaxWidth().padding(8.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(text)
+
+            Text("Deal Preview", fontWeight = FontWeight.Bold)
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("Location: $location")
+            Text("Size: $size sqm")
+            Text("Price: €$price")
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("GDV: €$gdv")
+            Text("Cost: €$cost")
+            Text("Profit: €$profit")
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("ROI: $roi%")
+            Text("Margin: $margin%")
+
             Spacer(modifier = Modifier.height(12.dp))
-            Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) {
+
+            Button(
+                onClick = onSave,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text("Save deal")
             }
         }
